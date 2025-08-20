@@ -1,0 +1,242 @@
+# src/sapien/client.py
+import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Dict, List, Optional
+
+import bson
+import motor.motor_asyncio
+import numpy as np
+from pymongo.collection import Collection
+
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:  # pragma: no cover
+    SentenceTransformer = None
+
+# Qdrant async imports
+from qdrant_client import AsyncQdrantClient, models
+
+
+@dataclass(frozen=True)
+class CollectionNames:
+    sessions: str = "sessions"
+    messages: str = "messages"
+    entities: str = "entities"
+    relations: str = "relations"
+
+
+@dataclass
+class SapienConfig:
+    mongo_uri: str
+    db_name: str = "llm_memory"
+
+    # Optional – set to None if you do not want vector search.
+    qdrant_url: Optional[str] = None
+
+    collections: CollectionNames = field(default_factory=CollectionNames)
+
+
+class SapienClient:
+    """
+    Async client for the temporal knowledge‑graph.
+
+    Example
+    -------
+    >>> from sapien import SapienClient, SapienConfig
+    >>> cfg = SapienConfig(mongo_uri="mongodb://localhost:27017/llm_memory")
+    >>> async with SapienClient(cfg) as db:
+    ...     await db.add_message("chat_1", "user", "I need a laptop.")
+    ...     ctx = await db.get_context("chat_1", "laptop")
+    """
+
+    def __init__(self, config: SapienConfig):
+        self._cfg = config
+        self._mongo_client = motor.motor_asyncio.AsyncIOMotorClient(config.mongo_uri)
+        self._db: motor.motor_asyncio.AsyncIOMotorDatabase = self._mongo_client[config.db_name]
+        self._col_names = config.collections
+
+        # Qdrant – only if a URL was supplied
+        self._qdrant: Optional[AsyncQdrantClient] = None
+        if config.qdrant_url:
+            self._qdrant = AsyncQdrantClient(url=config.qdrant_url)
+
+        # Embedding model – lazily loaded if needed
+        if SentenceTransformer:
+            self._model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        else:
+            self._model = None
+
+    async def __aenter__(self):
+        await self.ensure_collection()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+    async def close(self):
+        """Close the underlying Mongo client."""
+        self._mongo_client.close()
+        # AsyncQdrantClient has no explicit close() – it just uses aiohttp session.
+
+    # ------------------------------------------------------------------
+    # Internal helpers -------------------------------------------------
+    async def ensure_collection(self) -> None:
+        """Create the Qdrant collection if it does not exist yet."""
+        if not self._qdrant:
+            return
+        try:
+            await self._qdrant.create_collection(
+                collection_name="llm_memory",
+                vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE),
+            )
+        except Exception:  # pragma: no cover
+            # If the collection already exists we can safely ignore the error
+            pass
+
+    async def _embed_and_upsert(self, message_id: bson.ObjectId):
+        """Compute vector → store in Mongo (binary) & upsert to Qdrant."""
+        if self._model is None or not self._qdrant:
+            return  # user did not install the full stack
+
+        msg_doc = await self._messages.find_one({"_id": message_id})
+        if not msg_doc:
+            return
+
+        loop = asyncio.get_running_loop()
+        vec_np: np.ndarray = await loop.run_in_executor(
+            None, lambda: self._model.encode(msg_doc["content"])
+        )
+
+        # Store as binary in Mongo
+        vec_bytes = vec_np.astype(np.float32).tobytes()
+        await self._messages.update_one(
+            {"_id": message_id},
+            {"$set": {"embedding": vec_bytes}},
+        )
+
+        # Upsert into Qdrant (async)
+        point = models.PointStruct(
+            id=str(message_id),
+            vector=vec_np.tolist(),
+            payload={"session_id": msg_doc["session_id"]},
+        )
+        await self._qdrant.upsert(collection_name="llm_memory", points=[point])
+
+    # ------------------------------------------------------------------
+    # Public API -------------------------------------------------------
+    async def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        timestamp: Optional[datetime] = None,
+    ) -> bson.ObjectId:
+        """
+        Persist a raw message and asynchronously compute its vector.
+        Returns the Mongo `_id` of the inserted document.
+        """
+        if role not in {"user", "assistant"}:
+            raise ValueError("role must be 'user' or 'assistant'")
+        ts = timestamp or datetime.utcnow()
+
+        msg_doc = {
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+            "timestamp": ts,
+        }
+
+        result = await self._messages.insert_one(msg_doc)
+        message_id = result.inserted_id
+
+        # Fire‑and‑forget: embedding + Qdrant upsert
+        asyncio.create_task(self._embed_and_upsert(message_id))
+
+        return message_id
+
+    async def get_context(
+        self,
+        session_id: str,
+        query: str,
+        k: int = 10,
+    ) -> List[dict]:
+        """
+        Vector search in Qdrant → fetch the full Mongo docs.
+        Requires that a Qdrant URL was supplied at construction.
+        """
+        if not self._qdrant:
+            raise RuntimeError("Qdrant client not configured – install `[full]` or pass `qdrant_url`")
+
+        # Encode query in background
+        loop = asyncio.get_running_loop()
+        vec_np: np.ndarray = await loop.run_in_executor(
+            None,
+            lambda: self._model.encode(query) if self._model else None,
+        )
+        if vec_np is None:
+            raise RuntimeError("Embedding model not loaded")
+
+        q_vec = vec_np.tolist()
+
+        hits = await self._qdrant.search(
+            collection_name="llm_memory",
+            query_vector=q_vec,
+            limit=k,
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="session_id", match=models.MatchValue(value=session_id)
+                    )
+                ]
+            ),
+        )
+
+        ids = [hit.id for hit in hits]
+        cursor = self._messages.find({"_id": {"$in": [bson.ObjectId(i) for i in ids]}})
+        return await cursor.to_list(length=None)
+
+    # ------------------------------------------------------------------
+    # Convenience properties ---------------------------------------------
+    @property
+    def _sessions(self) -> Collection:
+        return self._db[self._col_names.sessions]
+
+    @property
+    def _messages(self) -> Collection:
+        return self._db[self._col_names.messages]
+
+    @property
+    def _entities(self) -> Collection:
+        return self._db[self._col_names.entities]
+
+    @property
+    def _relations(self) -> Collection:
+        return self._db[self._col_names.relations]
+
+    # ------------------------------------------------------------------
+    # Index creation (call once after construction)
+    async def init_indexes(self):
+        """Create the default indexes (idempotent)."""
+        await self._sessions.create_index("session_id", unique=True)
+
+        await self._messages.create_index(
+            [("session_id", 1), ("timestamp", -1)]
+        )
+        # Keep history for 30 days
+        await self._messages.create_index(
+            [("timestamp", -1)], expireAfterSeconds=60 * 60 * 24 * 30
+        )
+
+    # ------------------------------------------------------------------
+    # Optional: expose raw client objects (if you need them)
+    @property
+    def mongo_client(self):
+        return self._mongo_client
+
+    @property
+    def qdrant_client(self):
+        if not self._qdrant:
+            raise AttributeError("Qdrant not configured")
+        return self._qdrant
+    
