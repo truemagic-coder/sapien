@@ -233,12 +233,3 @@ class SapienClient:
             [("timestamp", -1)], expireAfterSeconds=60 * 60 * 24 * 30
         )
 
-    # ------------------------------------------------------------------
-    # Optional: expose raw client objects (if you need them)
-    @property
-    def mongo_client(self):
-        return self._mongo_client
-
-    @property
-    def qdrant_client(self):
-        return self._qdrant
