@@ -1,6 +1,6 @@
 # Sapien – Long Term Memory for AI
 
-Sapien is a lightweight Python client that lets you:
+Sapien is a lightweight temporal knowledge graph library that lets you:
 
 * Persist chat messages (or any event) in **MongoDB**.
 * Compute dense embeddings with **sentence‑transformers**.
