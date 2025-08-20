@@ -20,16 +20,16 @@ from qdrant_client import AsyncQdrantClient, models
 
 @dataclass(frozen=True)
 class CollectionNames:
-    sessions: str = "sessions"
-    messages: str = "messages"
-    entities: str = "entities"
-    relations: str = "relations"
+    sessions: str = "sapien_sessions"
+    messages: str = "sapien_messages"
+    entities: str = "sapien_entities"
+    relations: str = "sapien_relations"
 
 
 @dataclass
 class SapienConfig:
     mongo_uri: str
-    db_name: str = "llm_memory"
+    db_name: str = "sapien"
 
     # Optional – set to None if you do not want vector search.
     qdrant_url: Optional[str] = None
