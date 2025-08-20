@@ -1,0 +1,34 @@
+# pyproject.toml
+[tool.poetry]
+name = "sapien"
+version = "0.0.1"
+description = "Long-term memory for AI."
+authors = ["Bevan Hunt <bevan@bevanhunt.com>"]
+license = "MIT"
+readme = "README.md"
+
+# The source layout is `src/`. Poetry will automatically pick up any
+# packages found under that directory.
+packages = [{ include = "sapien", from = "." }]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<4.0"
+
+# Core runtime dependencies – all required, no optional extras.
+motor = "^3.7.1"
+pymongo = "^4.14.1"
+numpy = "^2.3.2"
+sentence-transformers = "^5.1.0"
+qdrant-client = "^1.15.1"
+
+[tool.poetry.dev-dependencies]
+pytest = "^8.4.1"
+pytest-asyncio = "^1.1.0"
+coverage = "^7.10.4"
+
+# Optional linters / formatters (nice to have, not mandatory).
+ruff  = { version = "^0.12.9", optional = true }
+
+[build-system]
+requires      = ["poetry-core>=1.6"]
+build-backend = "poetry.core.masonry.api"
