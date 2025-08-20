@@ -2,7 +2,7 @@
 [tool.poetry]
 name = "sapien"
 version = "0.0.1"
-description = "Long-term memory for AI."
+description = "Long Term Memory for AI."
 authors = ["Bevan Hunt <bevan@bevanhunt.com>"]
 license = "MIT"
 readme = "README.md"
