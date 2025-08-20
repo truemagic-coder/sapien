@@ -1,4 +1,4 @@
-# Sapien – Temporal Knowledge‑Graph for Long-Term Memory for AI
+# Sapien – Long Term Memory for AI
 
 Sapien is a lightweight Python client that lets you:
 
@@ -186,4 +186,4 @@ For major changes, open an issue first to discuss the scope.
 MIT © 2025 – feel free to use it however you like.
 
 ---
-P
+
