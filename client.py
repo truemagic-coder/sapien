@@ -43,9 +43,9 @@ class SapienConfig:
     All parameters are required; there are no implicit defaults.
     """
     mongo_uri: str
-    db_name: str                 # e.g. "sapien"
-    qdrant_url: str              # must be a valid Qdrant endpoint
-    collections: Optional[CollectionNames]
+    db_name: Optional[str] = "sapien"  # e.g. "sapien"
+    qdrant_url: str  # must be a valid Qdrant endpoint
+    collections: Optional[CollectionNames] = CollectionNames()
 
 
 class SapienClient:
